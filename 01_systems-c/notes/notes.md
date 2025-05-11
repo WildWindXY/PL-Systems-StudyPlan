@@ -101,3 +101,84 @@ The word size is the width of data the CPU can process in one operation (e.g., 3
 - Assuming `int` is always 4 bytes  
 - Using `sizeof(long)` for offset calculations  
 - Not using fixed-width types like `int32_t` from `<stdint.h>`  
+
+## Day 2: CSAPP Data Lab
+
+### Environment Setup
+
+```bash
+wsl --install -d Ubuntu-22.04
+
+# Inside WSL:
+sudo apt update
+sudo apt install gcc-multilib g++-multilib libc6-dev-i386
+```
+
+### Result
+
+> Score: 62/62 (36/36 Correct + 26/26 Performance)  
+> Operators used: 137
+
+### Notes
+
+#### 1. Signed Overflow and Undefined Behavior
+
+```c
+// Initial incorrect solution
+int isTmax(int x) {
+    return !(x + x + 2) & !!(x + 1); // Always returns 0 due to optimization
+}
+```
+
+This code gives the wrong result because signed integer overflow is undefined behavior (UB). The compiler assumes `x + x + 2 == 0`, which only holds for `x = -1`, making `!!(x + 1)` false. As a result, the expression is optimized to `return 0`. 
+
+```bash
+(gdb) disassemble isTmax
+# Dump of assembler code for function isTmax:
+#    0x0000000000001149 <+0>:     endbr64 
+#    0x000000000000114d <+4>:     push   %rbp
+#    0x000000000000114e <+5>:     mov    %rsp,%rbp
+#    0x0000000000001151 <+8>:     mov    %edi,-0x4(%rbp)
+#    0x0000000000001154 <+11>:    mov    $0x0,%eax
+#    0x0000000000001159 <+16>:    pop    %rbp
+#    0x000000000000115a <+17>:    ret    
+# End of assembler dump.
+```
+
+Using `volatile` prevents the compiler from applying undefined optimizations:
+```c
+int isTmaxVolatile(int x) {
+    volatile int a = x + x + 2;
+    volatile int b = x + 1;
+    return !a & !!b;
+}
+```
+
+```bash
+(gdb) disassemble isTmaxVolatile
+# Dump of assembler code for function isTmaxVolatile:
+#    0x000000000000115b <+0>:     endbr64 
+#    0x000000000000115f <+4>:     push   %rbp
+#    0x0000000000001160 <+5>:     mov    %rsp,%rbp
+#    0x0000000000001163 <+8>:     mov    %edi,-0x14(%rbp)
+#    0x0000000000001166 <+11>:    mov    -0x14(%rbp),%eax
+#    0x0000000000001169 <+14>:    add    $0x1,%eax
+#    0x000000000000116c <+17>:    add    %eax,%eax
+#    0x000000000000116e <+19>:    mov    %eax,-0x8(%rbp)
+#    0x0000000000001171 <+22>:    mov    -0x14(%rbp),%eax
+#    0x0000000000001174 <+25>:    add    $0x1,%eax
+```
+
+```c
+int main() {
+    printf("isTmax(0x7fffffff)         = %d\n", isTmax(0x7fffffff));
+    printf("isTmaxVolatile(0x7fffffff) = %d\n", isTmaxVolatile(0x7fffffff));
+    return 0;
+}
+```
+
+```bash
+gcc test.c -o test && ./test
+# isTmax(0x7fffffff)         = 0
+# isTmaxVolatile(0x7fffffff) = 1
+```
