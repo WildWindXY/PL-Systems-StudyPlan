@@ -182,3 +182,250 @@ gcc test.c -o test && ./test
 # isTmax(0x7fffffff)         = 0
 # isTmaxVolatile(0x7fffffff) = 1
 ```
+
+
+## Day 3: Assembly Fundamentals & Function Analysis
+
+### Reading Notes: CS:APP 3.1–3.5
+
+#### x86-64 Register Summary
+> 
+> **General Purpose Registers (64-bit):**
+> - `RAX`: Accumulator (return values, arithmetic)
+> - `RBX`: Base (callee-saved)
+> - `RCX`: Counter (loops, shifts)
+> - `RDX`: Data (I/O, argument passing)
+> - `RSI`: Source index (memory operations, 2nd argument)
+> - `RDI`: Destination index (memory operations, 1st argument)
+> - `RBP`: Base/frame pointer (stack frame reference)
+> - `RSP`: Stack pointer (top of current stack)
+> - `R8`–`R9`: 5th–6th function arguments
+> - `R10`–`R11`: Temporaries (caller-saved)
+> - `R12`–`R15`: Callee-saved local use
+
+> **Instruction Pointer:**
+> - `RIP`: Points to next instruction
+
+> **Flags (Condition Codes):**
+> - `EFLAGS` stores results of last arithmetic/logical op:
+>   - `ZF` (zero), `SF` (sign), `CF` (carry), `OF` (overflow)
+
+> **SIMD / Vector Registers:**
+> - `XMM0`–`XMM15`: 128-bit (SSE, float/int vectors)
+> - `YMM0`–`YMM15`: 256-bit (AVX)
+> - `ZMM0`–`ZMM31`: 512-bit (AVX-512, if supported)
+
+> **Calling Convention (System V ABI):**
+> - Arguments: `RDI`, `RSI`, `RDX`, `RCX`, `R8`, `R9`
+> - Return value: `RAX`
+> - Caller-saved: `RAX`, `RCX`, `RDX`, `R8–R11`
+> - Callee-saved: `RBX`, `RBP`, `R12–R15`
+
+#### Instructions Summary
+
+> **Operand Types**
+>
+> - Immediate: `$imm` → constant
+> - Register: `r_a` → `R[r_a]`
+> - Memory:
+>   - `imm` → `M[imm]` (absolute)
+>   - `(r_a)` → `M[R[r_a]]` (indirect)
+>   - `imm(r_b)` → `M[imm + R[r_b]]` (base + displacement)
+>   - `(r_b, r_i)` → `M[R[r_b] + R[r_i]]` (indexed)
+>   - `imm(r_b, r_i)` → `M[imm + R[r_b] + R[r_i]]`
+>   - `(, r_i, s)` → `M[R[r_i] * s]` (scaled index)
+>   - `imm(, r_i, s)` → `M[imm + R[r_i] * s]`
+>   - `(r_b, r_i, s)` → `M[R[r_b] + R[r_i] * s]`
+>   - `imm(r_b, r_i, s)` → `M[imm + R[r_b] + R[r_i] * s]`
+
+> **Data Movement**
+>
+> - `mov S, D` → `D ← S`
+> - `movb/w/l/q` → move byte/word/dword/qword
+> - `movabsq I, R` → move absolute immediate into register
+>
+> **Zero Extension**
+>
+> - `movz S, R` → `R ← ZeroExtend(S)`
+>   - `movzbw`, `movzbl`, `movzwl`, `movzbq`, `movzwq`
+>
+> **Sign Extension**
+>
+> - `movs S, R` → `R ← SignExtend(S)`
+>   - `movsbw`, `movsbl`, `movswl`, `movsbq`, `movswq`, `movslq`
+> - `cltq` → `%rax ← SignExtend(%eax)`
+>
+> **Stack**
+>
+> - `pushq S`:
+>   - `R[%rsp] ← R[%rsp] - 8`
+>   - `M[R[%rsp]] ← S`
+> - `popq D`:
+>   - `D ← M[R[%rsp]]`
+>   - `R[%rsp] ← R[%rsp] + 8`
+
+> **Arithmetic**
+>
+> - Unary:
+>   - `inc D`: `D ← D + 1`
+>   - `dec D`: `D ← D - 1`
+>   - `neg D`: `D ← -D`
+>   - `not D`: `D ← ~D`
+>
+> - Binary:
+>   - `add S, D`: `D ← D + S`
+>   - `sub S, D`: `D ← D - S`
+>   - `imul S, D`: `D ← D * S`
+>   - `xor S, D`: `D ← D ^ S`
+>   - `or S, D`: `D ← D | S`
+>   - `and S, D`: `D ← D & S`
+>
+> - Shifts:
+>   - `sal` / `shl`: `D ← D << k` (same)
+>   - `sar`: `D ← D >>A k` (arithmetic)
+>   - `shr`: `D ← D >>L k` (logical)
+>
+> - `leaq S, D`: `D ← &S` (compute address without dereferencing)
+
+> **Special Arithmetic**
+>
+> - Multiply:
+>   - `imulq S`: `R[%rdx]:R[%rax] ← S * R[%rax]` (signed)
+>   - `mulq S`: `R[%rdx]:R[%rax] ← S * R[%rax]` (unsigned)
+>
+> - Division:
+>   - `cqto`: `R[%rdx]:R[%rax] ← SignExtend(R[%rax])`
+>   - `idivq S`: Signed divide
+>     - `R[%rdx] ← R[%rdx]:R[%rax] % S`
+>     - `R[%rax] ← R[%rdx]:R[%rax] / S`
+>   - `divq S`: Unsigned divide
+>     - Same effect as above
+
+**Notes:**
+- Stack grows downward (high → low addresses)
+- Registers can store integers or pointers (64-bit)
+
+### Function Dissection Practice
+
+#### Source Code & Complication
+```c
+int sum(int *a, int n) {
+    int s = 0;
+    for (int i = 0; i < n; i++) {
+        s += a[i];
+    }
+    return s;
+}
+```
+
+Compiled with:
+
+```bash
+gcc -O0 -g sum.c -o sum_O0
+objdump -d -M intel sum_O0 > sum_O0.s
+
+gcc -O2 -g sum.c -o sum_O2
+objdump -d -M intel sum_O2 > sum_O2.s
+```
+
+#### `sum_O0.s` Walkthrough 
+
+> **Function Prologue**
+>
+> ```
+> push rbp                 # save old base pointer
+> mov rbp, rsp             # set up new stack frame
+> ```
+>
+> **Save parameters**
+>
+> ```
+> mov [rbp-0x18], rdi      # int* a
+> mov [rbp-0x1c], esi      # int n
+> ```
+>
+> **Initialize locals**
+>
+> ```
+> mov [rbp-0x08], 0        # s = 0
+> mov [rbp-0x04], 0        # i = 0
+> jmp <loop_cond>
+> ```
+> 
+> **Loop body: `s += a[i]`**
+>
+> ```
+> mov eax, [rbp-0x04]          # eax = i
+> cdqe                         # sign-extend to rax
+> lea rdx, [rax*4]             # rdx = i * 4
+> mov rax, [rbp-0x18]          # rax = a
+> add rax, rdx                 # rax = &a[i]
+> mov eax, [rax]               # eax = a[i]
+> add [rbp-0x08], eax          # s += a[i]
+> add [rbp-0x04], 1            # i++
+> ```
+>
+> **Loop condition: `i < n`**
+>
+> ```
+> mov eax, [rbp-0x04]
+> cmp eax, [rbp-0x1c]
+> jl <loop_body>
+> ```
+>
+> **Return**
+>
+> ```
+> mov eax, [rbp-0x08]          # return s
+> pop rbp
+> ret
+> ```
+
+> **Stack Frame Layout (relative to rbp)**
+>
+> ```
+> [rbp+0x00] → old rbp
+> [rbp-0x04] → int i
+> [rbp-0x08] → int s
+> [rbp-0x1c] → int n
+> [rbp-0x18] → int* a
+> ```
+
+#### `sum_O2.s` Walkthrough
+
+Compiled with `-O2`, this version eliminates the stack frame and uses only registers for computation.
+
+> **Assembly**
+> ```
+> test esi, esi               # if (n <= 0)
+> jle  <exit_zero>            # return 0
+>
+> lea eax, [esi - 1]          # eax = n - 1
+> lea rdx, [rdi + rax*4 + 4]  # rdx = a + n*4 (end address)
+> xor eax, eax                # eax = 0 (sum)
+>
+> loop:
+> add eax, [rdi]              # sum += *a
+> add rdi, 4                  # a++
+> cmp rdi, rdx                # reached end?
+> jne loop
+> ret
+>
+> exit_zero:
+> xor eax, eax
+> ret
+> ```
+
+> **Equivalent C Code**
+>
+> ```c
+> rdx = a + n * 4;   // end pointer
+> eax = 0;
+> for (; rdi != rdx; rdi += 4)
+>     eax += *(int *)rdi;
+> return eax;
+> ```
+
+- Loop unrolled to pointer comparison and offset addition
+- Uses `rdi` as the loop pointer and `rdx` as end address
+- No memory access beyond the input array
